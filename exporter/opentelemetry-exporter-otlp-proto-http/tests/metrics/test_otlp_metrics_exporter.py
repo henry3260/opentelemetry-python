@@ -1523,6 +1523,29 @@ class TestOTLPMetricExporter(TestCase):
             )
 
     @patch.object(Session, "post")
+    def test_export_429_is_retried(self, mock_post):
+        exporter = OTLPMetricExporter(timeout=10)
+
+        throttled_resp = Response()
+        throttled_resp.status_code = 429
+        throttled_resp.reason = "Too Many Requests"
+        throttled_resp.headers["Retry-After"] = "0"
+        ok_resp = Response()
+        ok_resp.status_code = 200
+        mock_post.side_effect = [throttled_resp, ok_resp]
+
+        with self.assertLogs(level=WARNING) as warning:
+            self.assertEqual(
+                exporter.export(self.metrics["sum_int"]),
+                MetricExportResult.SUCCESS,
+            )
+        self.assertEqual(mock_post.call_count, 2)
+        self.assertIn(
+            "Transient error Too Many Requests encountered while exporting metrics batch, retrying in",
+            warning.records[0].message,
+        )
+
+    @patch.object(Session, "post")
     def test_export_no_collector_available(self, mock_post):
         exporter = OTLPMetricExporter(timeout=1.5)
 

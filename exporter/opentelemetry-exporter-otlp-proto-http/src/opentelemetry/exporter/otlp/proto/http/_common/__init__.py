@@ -1,7 +1,11 @@
 # Copyright The OpenTelemetry Authors
 # SPDX-License-Identifier: Apache-2.0
 
+import math
+from datetime import timezone
+from email.utils import parsedate_to_datetime
 from os import environ
+from time import time
 from typing import Literal
 
 import requests
@@ -24,11 +28,40 @@ class RequestPayloadTooLargeError(Exception):
 
 
 def _is_retryable(resp: requests.Response) -> bool:
-    if resp.status_code == 408:
+    if resp.status_code in (408, 429):
         return True
     if resp.status_code >= 500 and resp.status_code <= 599:
         return True
     return False
+
+
+def _get_retry_after(resp: requests.Response) -> float | None:
+    """Parse the ``Retry-After`` header (RFC 7231) into a delay in seconds.
+
+    Supports both forms of the header: ``delay-seconds`` and ``HTTP-date``.
+    Returns ``None`` when the header is absent or malformed.
+    """
+    value = resp.headers.get("Retry-After")
+    if value is None:
+        return None
+    value = value.strip()
+
+    # delay-seconds: a non-negative decimal integer.
+    try:
+        seconds = float(value)
+    except ValueError:
+        pass
+    else:
+        return max(seconds, 0.0) if math.isfinite(seconds) else None
+
+    # HTTP-date: wait until the indicated absolute time.
+    try:
+        retry_at = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=timezone.utc)
+    return max(retry_at.timestamp() - time(), 0.0)
 
 
 def _is_request_too_large(

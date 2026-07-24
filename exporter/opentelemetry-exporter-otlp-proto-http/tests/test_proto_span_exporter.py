@@ -404,6 +404,78 @@ class TestOTLPSpanExporter(unittest.TestCase):
                 warning.records[0].message,
             )
 
+    @patch.object(Session, "post")
+    def test_export_429_is_retried(self, mock_post):
+        exporter = OTLPSpanExporter(timeout=10)
+
+        throttled_resp = Response()
+        throttled_resp.status_code = 429
+        throttled_resp.reason = "Too Many Requests"
+        throttled_resp.headers["Retry-After"] = "0"
+        ok_resp = Response()
+        ok_resp.status_code = 200
+        mock_post.side_effect = [throttled_resp, ok_resp]
+
+        with self.assertLogs(level=WARNING) as warning:
+            self.assertEqual(
+                exporter.export([BASIC_SPAN]),
+                SpanExportResult.SUCCESS,
+            )
+        self.assertEqual(mock_post.call_count, 2)
+        self.assertIn(
+            "Transient error Too Many Requests encountered while exporting span batch, retrying in",
+            warning.records[0].message,
+        )
+
+    @patch.object(Session, "post")
+    def test_export_retry_after_overrides_backoff(self, mock_post):
+        exporter = OTLPSpanExporter(timeout=10)
+
+        throttled_resp = Response()
+        throttled_resp.status_code = 429
+        throttled_resp.reason = "Too Many Requests"
+        throttled_resp.headers["Retry-After"] = "0"
+        ok_resp = Response()
+        ok_resp.status_code = 200
+        mock_post.side_effect = [throttled_resp, ok_resp]
+
+        with self.assertLogs(level=WARNING):
+            before = time.time()
+            self.assertEqual(
+                exporter.export([BASIC_SPAN]),
+                SpanExportResult.SUCCESS,
+            )
+            elapsed = time.time() - before
+        # Without the Retry-After header the first backoff sleeps
+        # 0.8-1.2 seconds; the header's value of 0 must replace it.
+        self.assertLess(elapsed, 0.5)
+
+    @patch.object(Session, "post")
+    def test_export_retry_after_exceeding_deadline_fails_fast(self, mock_post):
+        exporter = OTLPSpanExporter(timeout=1.5)
+
+        throttled_resp = Response()
+        throttled_resp.status_code = 429
+        throttled_resp.reason = "Too Many Requests"
+        throttled_resp.headers["Retry-After"] = "100"
+        mock_post.return_value = throttled_resp
+
+        with self.assertLogs(level=WARNING) as warning:
+            before = time.time()
+            self.assertEqual(
+                exporter.export([BASIC_SPAN]),
+                SpanExportResult.FAILURE,
+            )
+            elapsed = time.time() - before
+        # The requested delay exceeds the remaining deadline, so the
+        # exporter must give up without sleeping the 100 seconds.
+        self.assertEqual(mock_post.call_count, 1)
+        self.assertLess(elapsed, 1.5)
+        self.assertIn(
+            "Failed to export span batch due to timeout, max retries or shutdown.",
+            warning.records[-1].message,
+        )
+
     @patch.dict(
         "os.environ", {OTEL_PYTHON_SDK_INTERNAL_METRICS_ENABLED: "true"}
     )

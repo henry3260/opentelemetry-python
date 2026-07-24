@@ -1,0 +1,1 @@
+`opentelemetry-exporter-otlp-proto-http`: retry on HTTP 429 (Too Many Requests) responses and honor the `Retry-After` response header when backing off, per the OTLP specification. Previously a throttled export was dropped immediately as a permanent failure and the server-requested delay was ignored.

@@ -41,6 +41,7 @@ from opentelemetry.exporter.otlp.proto.http import (
 from opentelemetry.exporter.otlp.proto.http._common import (
     _DEFAULT_MAX_REQUEST_SIZE,
     RequestPayloadTooLargeError,
+    _get_retry_after,
     _is_request_too_large,
     _is_retryable,
     _load_session_from_envvar,
@@ -319,6 +320,10 @@ class OTLPMetricExporter(MetricExporter, OTLPMetricExporterMixin):
                     reason = resp.reason
                     retryable = _is_retryable(resp)
                     status_code = resp.status_code
+                    if retryable:
+                        retry_after = _get_retry_after(resp)
+                        if retry_after is not None:
+                            backoff_seconds = retry_after
 
                 if not retryable:
                     _logger.error(
